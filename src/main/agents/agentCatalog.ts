@@ -8,6 +8,7 @@ export const agentCatalog: AgentDefinition[] = [
     entrypoints: ['论文详情', '飞书入口'],
     status: 'ready',
     runtime: 'langchain',
+    mode: 'workflow',
   },
   {
     key: 'reader-qa',
@@ -16,6 +17,7 @@ export const agentCatalog: AgentDefinition[] = [
     entrypoints: ['阅读器'],
     status: 'ready',
     runtime: 'langchain',
+    mode: 'loop-agent',
   },
   {
     key: 'topic-tracking',
@@ -24,6 +26,7 @@ export const agentCatalog: AgentDefinition[] = [
     entrypoints: ['AI 工作台', '每日调度'],
     status: 'ready',
     runtime: 'langchain',
+    mode: 'workflow',
   },
   {
     key: 'demo-runtime',
@@ -32,5 +35,6 @@ export const agentCatalog: AgentDefinition[] = [
     entrypoints: ['工作台演示'],
     status: 'ready',
     runtime: 'langchain',
+    mode: 'workflow',
   },
 ];
