@@ -785,6 +785,11 @@ function SettingsPage(props: SettingsPageProps): JSX.Element {
   const [aiModelConfig, setAiModelConfig] = useState(props.workspace.config.aiModelConfig);
   const [isSaving, setIsSaving] = useState(false);
   const [isApiKeyVisible, setIsApiKeyVisible] = useState(false);
+  const [isTestingAiModel, setIsTestingAiModel] = useState(false);
+  const [aiModelTestResult, setAiModelTestResult] = useState<{
+    tone: 'success' | 'error';
+    message: string;
+  } | null>(null);
   const fontSizeProgress = useMemo(
     () => ((fontSize - MIN_WORKSPACE_FONT_SIZE) / (MAX_WORKSPACE_FONT_SIZE - MIN_WORKSPACE_FONT_SIZE)) * 100,
     [fontSize],
@@ -797,6 +802,7 @@ function SettingsPage(props: SettingsPageProps): JSX.Element {
     setWorkspaceDirectories(props.workspace.config.workspaceDirectories);
     setExternalMediaConfig(props.workspace.config.externalMediaConfig);
     setAiModelConfig(props.workspace.config.aiModelConfig);
+    setAiModelTestResult(null);
   }, [props.workspace.config]);
 
   useEffect(() => {
@@ -833,6 +839,34 @@ function SettingsPage(props: SettingsPageProps): JSX.Element {
       ...current,
       [key]: selectedPath,
     }));
+  }
+
+  async function handleTestAiModelConnection(): Promise<void> {
+    if (typeof window.desktopApi.testAiModelConnection !== 'function') {
+      setAiModelTestResult({
+        tone: 'error',
+        message: '当前窗口尚未加载最新 preload，请重启应用后再测试模型连接。',
+      });
+      return;
+    }
+
+    setIsTestingAiModel(true);
+    setAiModelTestResult(null);
+
+    try {
+      const result = await window.desktopApi.testAiModelConnection(aiModelConfig);
+      setAiModelTestResult({
+        tone: 'success',
+        message: `连接成功：${result.model} · ${result.latencyMs}ms · ${result.responsePreview}`,
+      });
+    } catch (error) {
+      setAiModelTestResult({
+        tone: 'error',
+        message: error instanceof Error ? error.message : '模型连接测试失败',
+      });
+    } finally {
+      setIsTestingAiModel(false);
+    }
   }
 
   return (
@@ -1054,6 +1088,23 @@ function SettingsPage(props: SettingsPageProps): JSX.Element {
               </button>
             </div>
           </label>
+        </div>
+        <div className="settings-ai-test-panel">
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={isTestingAiModel}
+            onClick={() => void handleTestAiModelConnection()}
+          >
+            {isTestingAiModel ? '测试中...' : '测试连接'}
+          </button>
+          {aiModelTestResult ? (
+            <p className={aiModelTestResult.tone === 'success' ? 'settings-test-result settings-test-result-success' : 'settings-test-result settings-test-result-error'}>
+              {aiModelTestResult.message}
+            </p>
+          ) : (
+            <p className="settings-test-result">测试会直接使用当前表单配置，不需要先保存。</p>
+          )}
         </div>
       </SectionCard>
     </section>

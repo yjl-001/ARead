@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import { dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
 
 import type {
+  AiModelConfig,
+  AiModelConnectionTestResult,
   BootstrapPayload,
   FeishuMessageInput,
   PaperAnalysisQuestionInput,
@@ -18,6 +20,7 @@ import type {
 } from '@shared/types';
 
 import { AgentRuntimeService } from '../agents/AgentRuntimeService';
+import { AiModelClient } from '../ai/AiModelClient';
 import { PaperAnalysisService } from '../analysis/PaperAnalysisService';
 import { ExternalMediaServer } from '../integrations/ExternalMediaServer';
 import { ExternalMediaService } from '../integrations/ExternalMediaService';
@@ -47,6 +50,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlerOptions): void {
   ipcMain.removeHandler('app:get-bootstrap');
   ipcMain.removeHandler('workspace:save-config');
   ipcMain.removeHandler('workspace:pick-directory');
+  ipcMain.removeHandler('ai:test-model-connection');
   ipcMain.removeHandler('agent:run-demo');
   ipcMain.removeHandler('library:get');
   ipcMain.removeHandler('paper:search');
@@ -72,6 +76,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlerOptions): void {
   ipcMain.removeHandler('reader:select-assistant-session');
   ipcMain.removeHandler('reader:save-assistant-session');
   ipcMain.removeHandler('reader:ask-assistant');
+  ipcMain.removeHandler('reader:ask-assistant-stream');
   ipcMain.removeHandler('external-media:get-snapshot');
   ipcMain.removeHandler('external-media:simulate-feishu-message');
 
@@ -148,6 +153,37 @@ export function registerIpcHandlers(options: RegisterIpcHandlerOptions): void {
 
     return result.filePaths[0];
   });
+
+  ipcMain.handle(
+    'ai:test-model-connection',
+    async (_event: IpcMainInvokeEvent, input: AiModelConfig): Promise<AiModelConnectionTestResult> => {
+      const startedAt = Date.now();
+      const client = new AiModelClient(input);
+      const result = await client.chat({
+        messages: [
+          {
+            role: 'system',
+            content: '你是 Vibe Reading 的模型连接测试助手。请只回复一句简短中文确认。',
+          },
+          {
+            role: 'user',
+            content: '请回复：模型连接成功。',
+          },
+        ],
+        temperature: 0,
+        maxTokens: 48,
+      });
+
+      return {
+        ok: true,
+        provider: input.provider.trim() || 'OpenAI Compatible',
+        model: result.model,
+        latencyMs: Date.now() - startedAt,
+        responsePreview: result.content.slice(0, 120),
+        testedAt: new Date().toISOString(),
+      };
+    },
+  );
 
   ipcMain.handle('agent:run-demo', async (_event: IpcMainInvokeEvent, title: string) => {
     return options.agentRuntimeService.runDemoAgent(title);
@@ -259,6 +295,23 @@ export function registerIpcHandlers(options: RegisterIpcHandlerOptions): void {
   ipcMain.handle('reader:ask-assistant', async (_event: IpcMainInvokeEvent, input: ReaderAssistantInput) => {
     return options.readerService.askAssistant(input);
   });
+
+  ipcMain.handle(
+    'reader:ask-assistant-stream',
+    async (_event: IpcMainInvokeEvent, input: ReaderAssistantInput & { requestId: string }) => {
+      const { requestId, ...assistantInput } = input;
+
+      return options.readerService.askAssistant(assistantInput, {
+        onDelta: (delta) => {
+          _event.sender.send('reader:assistant-stream-event', {
+            type: 'delta',
+            requestId,
+            delta,
+          });
+        },
+      });
+    },
+  );
 
   ipcMain.handle('external-media:get-snapshot', async () => {
     return options.externalMediaServer.getSnapshot();

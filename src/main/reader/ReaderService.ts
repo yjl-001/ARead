@@ -16,11 +16,21 @@ import type {
 } from '@shared/types';
 
 import { AgentRuntimeService } from '../agents/AgentRuntimeService';
+import { createReaderQaLoopSpec } from '../agents/specs/readerQaAgent';
+import { AgentToolRegistry } from '../agents/toolRegistry';
+import { createInternetTools } from '../agents/tools/internetTools';
+import { createReaderTools } from '../agents/tools/readerTools';
 import { PaperService } from '../papers/PaperService';
+import { ReaderInternetContextService } from './ReaderInternetContextService';
+import { PaperTextIndexService } from './PaperTextIndexService';
 
 interface ReaderServiceFiles {
   readingIndexFile: string;
   sessionDirectory: string;
+}
+
+interface ReaderAssistantOptions {
+  onDelta?: (delta: string) => void;
 }
 
 /**
@@ -32,11 +42,17 @@ interface ReaderServiceFiles {
 export class ReaderService {
   private readonly files: ReaderServiceFiles;
 
+  private readonly paperTextIndexService: PaperTextIndexService;
+
+  private readonly readerInternetContextService: ReaderInternetContextService;
+
   public constructor(
     directories: WorkspaceDirectories,
     private readonly paperService: PaperService,
     private readonly agentRuntimeService: AgentRuntimeService,
   ) {
+    this.paperTextIndexService = new PaperTextIndexService(directories);
+    this.readerInternetContextService = new ReaderInternetContextService(directories);
     this.files = {
       readingIndexFile: path.join(directories.metadata, 'reading.json'),
       sessionDirectory: path.join(directories.notes, 'reader-sessions'),
@@ -298,7 +314,7 @@ export class ReaderService {
    * @param {ReaderAssistantInput} input AI 问答输入
    * @returns {Promise<ReaderAssistantReply>} 包含会话、任务轨迹与回复的结果
    */
-  public async askAssistant(input: ReaderAssistantInput): Promise<ReaderAssistantReply> {
+  public async askAssistant(input: ReaderAssistantInput, options: ReaderAssistantOptions = {}): Promise<ReaderAssistantReply> {
     await this.ensureStorage();
     const paper = await this.paperService.getPaperById(input.paperId);
 
@@ -309,6 +325,11 @@ export class ReaderService {
     const session = await this.readSession(input.paperId);
     const now = new Date().toISOString();
     const ensuredAssistantSession = this.resolveAssistantSession(session, input.assistantSessionId, now);
+    const agentSessionContext: ReaderSession = {
+      ...session,
+      assistantSessions: ensuredAssistantSession.assistantSessions,
+      currentAssistantSessionId: ensuredAssistantSession.targetSession.id,
+    };
     const userMessage: ReaderChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -316,12 +337,13 @@ export class ReaderService {
       createdAt: now,
       references: [`第 ${input.currentPage} 页`],
     };
-    const agentResult = await this.agentRuntimeService.runReaderQaAgent({
+    const agentResult = await this.runReaderQaAgentWithFallback(
       paper,
-      session,
-      question: input.question.trim(),
-      currentPage: input.currentPage,
-    });
+      agentSessionContext,
+      input.question.trim(),
+      input.currentPage,
+      options.onDelta,
+    );
     const assistantMessage: ReaderChatMessage = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
@@ -354,6 +376,81 @@ export class ReaderService {
       task: agentResult.task,
       timeline: agentResult.timeline,
     };
+  }
+
+  /**
+   * @function runReaderQaAgentWithFallback
+   * @description 优先执行自治阅读问答 Agent，失败或模型未配置时回退到现有固定流程。
+   * @param {PaperRecord} paper 当前论文记录
+   * @param {ReaderSession} session 当前阅读会话
+   * @param {string} question 用户问题
+   * @param {number} currentPage 当前页码
+   * @param {(delta: string) => void | undefined} onDelta 增量回调
+   * @returns {Promise<{ answer: string; references: string[]; task: import('@shared/types').AgentTaskRecord; timeline: import('@shared/types').AgentTimelineEntry[] }>} 统一问答结果
+   */
+  private async runReaderQaAgentWithFallback(
+    paper: import('@shared/types').PaperRecord,
+    session: ReaderSession,
+    question: string,
+    currentPage: number,
+    onDelta?: (delta: string) => void,
+  ): Promise<{
+    answer: string;
+    references: string[];
+    task: import('@shared/types').AgentTaskRecord;
+    timeline: import('@shared/types').AgentTimelineEntry[];
+  }> {
+    if (this.agentRuntimeService.isModelConfigured()) {
+      try {
+        const toolRegistry = new AgentToolRegistry();
+        toolRegistry.registerAll<import('../agents/specs/readerQaAgent').ReaderQaGoal>(createReaderTools({
+          paperTextIndexService: this.paperTextIndexService,
+        }));
+        toolRegistry.registerAll<import('../agents/specs/readerQaAgent').ReaderQaGoal>(createInternetTools({
+          paperTextIndexService: this.paperTextIndexService,
+          readerInternetContextService: this.readerInternetContextService,
+        }));
+        const readerQaLoopSpec = createReaderQaLoopSpec();
+        const loopResult = await this.agentRuntimeService.runLoopAgent({
+          agentKey: 'reader-qa',
+          title: `阅读问答：${paper.title}`,
+          initialStage: '自治规划',
+          initialMessage: `已接收阅读器问题，自治 Agent 正围绕第 ${currentPage} 页规划检索路径。`,
+          completionStage: '生成完成',
+          completionSummary: (_state, result) => `自治阅读问答已完成，并返回 ${result.references.length} 条引用线索。`,
+          goal: {
+            paper,
+            session,
+            question,
+            currentPage,
+          },
+          spec: readerQaLoopSpec,
+          tools: toolRegistry.getAllowedTools(readerQaLoopSpec.allowedTools),
+          onDelta,
+        });
+
+        return {
+          answer: loopResult.result.answer,
+          references: loopResult.result.references,
+          task: loopResult.task,
+          timeline: loopResult.timeline,
+        };
+      } catch {
+        // 关键逻辑：自治 Agent 首版仍在演进中，因此运行失败时回退到原有固定流程以保证阅读器可用性。
+      }
+    }
+
+    const textContext = await this.paperTextIndexService.getReaderTextContext(paper, currentPage, question);
+    const internetContext = await this.readerInternetContextService.collect(paper, question, textContext);
+    return this.agentRuntimeService.runReaderQaAgent({
+      paper,
+      session,
+      question,
+      currentPage,
+      textContext,
+      internetContext,
+      onDelta,
+    });
   }
 
   /**

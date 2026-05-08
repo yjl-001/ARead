@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import type { DesktopApi } from '@shared/types';
+import type { DesktopApi, ReaderAssistantStreamEvent } from '@shared/types';
 
 const desktopApi: DesktopApi = {
   getBootstrap() {
@@ -11,6 +11,9 @@ const desktopApi: DesktopApi = {
   },
   pickDirectory(currentPath) {
     return ipcRenderer.invoke('workspace:pick-directory', currentPath);
+  },
+  testAiModelConnection(input) {
+    return ipcRenderer.invoke('ai:test-model-connection', input);
   },
   getLibrary() {
     return ipcRenderer.invoke('library:get');
@@ -86,6 +89,25 @@ const desktopApi: DesktopApi = {
   },
   askReaderAssistant(input) {
     return ipcRenderer.invoke('reader:ask-assistant', input);
+  },
+  askReaderAssistantStream(input, onEvent) {
+    const requestId = `reader-stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const listener = (_event: Electron.IpcRendererEvent, payload: ReaderAssistantStreamEvent) => {
+      if (payload.requestId === requestId) {
+        onEvent(payload);
+      }
+    };
+
+    ipcRenderer.on('reader:assistant-stream-event', listener);
+
+    return ipcRenderer
+      .invoke('reader:ask-assistant-stream', {
+        ...input,
+        requestId,
+      })
+      .finally(() => {
+        ipcRenderer.removeListener('reader:assistant-stream-event', listener);
+      });
   },
   getExternalMediaSnapshot() {
     return ipcRenderer.invoke('external-media:get-snapshot');

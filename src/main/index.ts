@@ -69,7 +69,9 @@ function createMainWindow(): BrowserWindow {
 async function bootstrapDesktopApp(): Promise<void> {
   const workspaceService = new WorkspaceService(path.join(app.getPath('userData'), 'workspace'));
   await workspaceService.ensureWorkspace();
-  const agentRuntimeService = new AgentRuntimeService();
+  const agentRuntimeService = new AgentRuntimeService({
+    getAiModelConfig: () => workspaceService.getConfig().aiModelConfig,
+  });
   const paperService = new PaperService(workspaceService.getDirectories());
   const readerService = new ReaderService(workspaceService.getDirectories(), paperService, agentRuntimeService);
   const paperAnalysisService = new PaperAnalysisService(

@@ -19,6 +19,7 @@ import type {
   PaperRecord,
   ReaderAnnotationColor,
   ReaderAssistantSession,
+  ReaderChatMessage,
   ReaderHighlightArea,
   ReaderSession,
 } from '@shared/types';
@@ -937,13 +938,6 @@ export function ReaderPage(props: ReaderPageProps): JSX.Element {
             </button>
           ) : null}
         </div>
-
-        <header className="reader-topbar">
-          <div className="reader-topbar-title">
-            <h2>{selectedPaper.title}</h2>
-            <p className="muted">{joinTextList(selectedPaper.authors, ' · ', '作者信息缺失')}</p>
-          </div>
-        </header>
 
         {isLoadingSession ? <p className="muted">正在恢复阅读进度、批注与对话记录...</p> : null}
         {sessionError ? <p className="error-text">{sessionError}</p> : null}
@@ -2154,7 +2148,7 @@ function ReaderPdfPanel(props: ReaderPdfPanelProps): JSX.Element {
                 key={`${paper.id}-${viewerVariant}`}
                 fileUrl={pdfBlobUrl}
                 initialPage={Math.max(0, currentPage - 1)}
-                defaultScale={zoom > 0 ? zoom : SpecialZoomLevel.PageFit}
+                defaultScale={SpecialZoomLevel.PageFit}
                 plugins={
                   viewerVariant === 'annotate'
                     ? [pageNavigationPluginInstance, zoomPluginInstance, highlightPluginInstance]
@@ -2522,11 +2516,12 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
   const [question, setQuestion] = useState('');
   const [isAsking, setIsAsking] = useState(false);
   const [isSessionStripCollapsed, setIsSessionStripCollapsed] = useState(true);
-  const [timelineSummary, setTimelineSummary] = useState<string[]>([]);
   const [isAssistantComposerFlashing, setIsAssistantComposerFlashing] = useState(false);
+  const [optimisticMessages, setOptimisticMessages] = useState<ReaderChatMessage[]>([]);
   const assistantSessions = getReaderAssistantSessions(props.session);
   const activeAssistantSession = getCurrentReaderAssistantSession(props.session);
   const conversation = activeAssistantSession?.conversation ?? [];
+  const displayedConversation = optimisticMessages.length ? [...conversation, ...optimisticMessages] : conversation;
   const questionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
@@ -2548,6 +2543,10 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
   }, [isAsking, props]);
 
   useEffect(() => {
+    setOptimisticMessages([]);
+  }, [activeAssistantSession?.id]);
+
+  useEffect(() => {
     if (!isAssistantComposerFlashing) {
       return;
     }
@@ -2562,10 +2561,6 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
   }, [isAssistantComposerFlashing]);
 
   useEffect(() => {
-    setTimelineSummary([]);
-  }, [activeAssistantSession?.id]);
-
-  useEffect(() => {
     const threadElement = threadRef.current;
 
     if (!threadElement) {
@@ -2576,22 +2571,58 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
       top: threadElement.scrollHeight,
       behavior: 'smooth',
     });
-  }, [conversation.length, isAsking]);
+  }, [displayedConversation.length, isAsking]);
 
   async function handleAskAssistant(): Promise<void> {
     if (isAsking || !question.trim() || !activeAssistantSession) {
       return;
     }
 
+    const submittedQuestion = question.trim();
+    const submittedAt = new Date().toISOString();
+    const userMessageId = `optimistic-user-${Date.now()}`;
+    const assistantMessageId = `optimistic-assistant-${Date.now()}`;
+
     setIsAsking(true);
+    setQuestion('');
+    setOptimisticMessages([
+      {
+        id: userMessageId,
+        role: 'user',
+        content: submittedQuestion,
+        createdAt: submittedAt,
+        references: [`第 ${props.currentPage} 页`],
+      },
+      {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: '',
+        createdAt: new Date().toISOString(),
+        references: [],
+      },
+    ]);
 
     try {
-      const result = await window.desktopApi.askReaderAssistant({
+      const assistantInput = {
         paperId: props.paper.id,
-        question,
+        question: submittedQuestion,
         currentPage: props.currentPage,
         assistantSessionId: activeAssistantSession.id,
-      });
+      };
+      const result = typeof window.desktopApi.askReaderAssistantStream === 'function'
+        ? await window.desktopApi.askReaderAssistantStream(assistantInput, (event) => {
+            setOptimisticMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      content: `${message.content}${event.delta}`,
+                    }
+                  : message,
+              ),
+            );
+          })
+        : await window.desktopApi.askReaderAssistant(assistantInput);
       let nextSession = result.session;
       const nextAssistantSession = getCurrentReaderAssistantSession(result.session);
       const latestAssistantReply = nextAssistantSession?.conversation.at(-1)?.content ?? '';
@@ -2609,8 +2640,7 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
       }
 
       props.onSessionChange(nextSession);
-      setTimelineSummary(result.timeline.map((entry) => `${entry.stage}：${entry.message}`));
-      setQuestion('');
+      setOptimisticMessages([]);
       setIsAssistantComposerFlashing(true);
       props.onNotify({
         tone: 'success',
@@ -2621,6 +2651,7 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
         tone: 'error',
         message: error instanceof Error ? error.message : '阅读问答失败',
       });
+      setOptimisticMessages([]);
     } finally {
       setIsAsking(false);
     }
@@ -2710,8 +2741,8 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
         ) : null}
       </div>
       <div ref={threadRef} className="reader-assistant-thread">
-        {conversation.length ? (
-          conversation.map((message) => (
+        {displayedConversation.length ? (
+          displayedConversation.map((message) => (
             <article
               key={message.id}
               className={
@@ -2728,10 +2759,15 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
                 }
               >
                 <div className="reader-chat-message-meta">
-                  <strong>{message.role === 'assistant' ? 'AI 助手' : '我'}</strong>
+                  {message.role === 'assistant' ? <strong>AI 助手</strong> : null}
                   <span>{formatChatMessageTime(message.createdAt)}</span>
                 </div>
-                <p>{message.content}</p>
+                <p>
+                  {message.content
+                    || (message.id.startsWith('optimistic-assistant')
+                      ? '正在结合 PDF 正文、当前页、批注和笔记整理回答…'
+                      : '')}
+                </p>
                 {message.references.length ? (
                   <div className="reader-chat-message-references">
                     {message.references.map((reference) => (
@@ -2764,26 +2800,19 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
             <p>试试提问“这篇论文的核心贡献是什么？”或“第 3 页的方法和基线差异在哪里？”</p>
           </div>
         )}
-        {isAsking ? (
+        {isAsking && !optimisticMessages.length ? (
           <article className="reader-chat-row reader-chat-row-assistant">
             <div className="reader-chat-message reader-chat-message-assistant reader-chat-message-thinking">
               <div className="reader-chat-message-meta">
                 <strong>AI 助手</strong>
                 <span>思考中</span>
               </div>
-              <p>正在结合当前页、批注和笔记整理回答…</p>
+              <p>正在结合 PDF 正文、当前页、批注和笔记整理回答…</p>
             </div>
           </article>
         ) : null}
       </div>
       <div className="reader-assistant-composer">
-        {timelineSummary.length ? (
-          <div className="reader-assistant-status-list">
-            {timelineSummary.map((item) => (
-              <p key={item}>{item}</p>
-            ))}
-          </div>
-        ) : null}
         {props.assistantSelection ? (
           <div className="reader-assistant-selection-card">
             <div className="reader-assistant-selection-meta">
@@ -2819,15 +2848,15 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
               onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !isAsking && question.trim()) {
+                if (event.key === 'Enter' && !event.shiftKey && !isAsking && question.trim()) {
                   event.preventDefault();
                   void handleAskAssistant();
                 }
               }}
               rows={5}
-              placeholder={`围绕第 ${props.currentPage} 页继续提问，AI 会结合摘要、批注和笔记回答。`}
+              placeholder={`围绕第 ${props.currentPage} 页继续提问，AI 会结合 PDF 正文、摘要、批注和笔记回答。`}
             />
-            <span className="reader-note-shortcut-hint">⌘/Ctrl + Enter</span>
+            <span className="reader-note-shortcut-hint">Enter 发送 · Shift+Enter 换行</span>
             <button
               type="button"
               className="reader-note-send-button"
@@ -3110,14 +3139,6 @@ function createMarginConnectorPath(connector: MarginAnnotationConnector): string
   const controlX2 = connector.endX - (deltaX > 0 ? controlOffset : -controlOffset);
 
   return `M ${connector.startX} ${connector.startY} C ${controlX1} ${connector.startY}, ${controlX2} ${connector.endY}, ${connector.endX} ${connector.endY}`;
-}
-
-function joinTextList(values: string[] | null | undefined, separator: string, fallback: string): string {
-  if (!Array.isArray(values) || values.length === 0) {
-    return fallback;
-  }
-
-  return values.join(separator) || fallback;
 }
 
 function normalizeHighlightArea(area: HighlightArea): ReaderHighlightArea {

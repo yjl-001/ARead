@@ -46,6 +46,15 @@ export interface AiModelConfig {
   model: string;
 }
 
+export interface AiModelConnectionTestResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  latencyMs: number;
+  responsePreview: string;
+  testedAt: string;
+}
+
 export interface WorkspaceConfig {
   version: string;
   createdAt: string;
@@ -224,6 +233,12 @@ export interface ReaderAssistantReply {
   timeline: AgentTimelineEntry[];
 }
 
+export interface ReaderAssistantStreamEvent {
+  type: 'delta';
+  requestId: string;
+  delta: string;
+}
+
 export interface AgentTaskRecord {
   id: string;
   title: string;
@@ -244,6 +259,7 @@ export interface AgentDefinition {
   entrypoints: string[];
   status: 'placeholder' | 'ready';
   runtime: 'langchain';
+  mode?: 'workflow' | 'loop-agent';
 }
 
 export interface AgentTimelineEntry {
@@ -515,6 +531,7 @@ export interface DesktopApi {
   getBootstrap(): Promise<BootstrapPayload>;
   saveWorkspaceConfig(input: WorkspaceConfigInput): Promise<BootstrapPayload['workspace']>;
   pickDirectory(currentPath?: string): Promise<string | null>;
+  testAiModelConnection(input: AiModelConfig): Promise<AiModelConnectionTestResult>;
   getLibrary(): Promise<PaperLibraryPayload>;
   runDemoAgent(title: string): Promise<AgentRunResult>;
   readLocalPdf(filePath: string): Promise<string>;
@@ -540,6 +557,10 @@ export interface DesktopApi {
   selectReaderAssistantSession(paperId: string, assistantSessionId: string): Promise<ReaderSession>;
   saveReaderAssistantSession(paperId: string, assistantSessionId: string, title?: string): Promise<ReaderSession>;
   askReaderAssistant(input: ReaderAssistantInput): Promise<ReaderAssistantReply>;
+  askReaderAssistantStream(
+    input: ReaderAssistantInput,
+    onEvent: (event: ReaderAssistantStreamEvent) => void,
+  ): Promise<ReaderAssistantReply>;
   getExternalMediaSnapshot(): Promise<ExternalMediaSnapshot>;
   simulateFeishuMessage(input: FeishuMessageInput): Promise<ExternalMediaTaskReceipt>;
 }
