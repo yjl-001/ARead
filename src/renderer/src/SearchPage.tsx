@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import type {
@@ -9,30 +9,13 @@ import type {
 
 import { getPaperSourceLabel } from './paperSources';
 
-/**
- * 搜索页的最小依赖输入。
- * 页面自身只负责搜索与渲染，不直接操作全局状态容器，
- * 由上层把论文库快照和导入行为注入进来。
- */
 interface SearchPageProps {
   library: PaperLibraryPayload;
   onImportPaper: (paper: PaperSearchResult) => Promise<void>;
 }
 
-/**
- * 搜索页面组件。
- *
- * 主要职责：
- * - 管理 query / source / results / searching 等本地交互状态
- * - 调用 desktopApi 发起聚合搜索
- * - 渲染搜索表单与结果列表
- * - 复用论文库状态，提示论文是否已导入
- *
- * 这里被单独拆出后，App.tsx 只保留路由与全局壳层职责，
- * 便于后续继续把搜索表单、结果卡片拆成更细粒度组件。
- */
 export function SearchPage(props: SearchPageProps): JSX.Element {
-  const [query, setQuery] = useState('graph neural network');
+  const [query, setQuery] = useState('');
   const [source, setSource] = useState<PaperSearchSource>('all');
   const [results, setResults] = useState<PaperSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -40,20 +23,18 @@ export function SearchPage(props: SearchPageProps): JSX.Element {
   const [hasSearched, setHasSearched] = useState(false);
   const [importingId, setImportingId] = useState('');
 
-  /**
-   * 预先把已入库论文转成 Set，避免每个结果卡片都在线性查找。
-   */
+  /** 请求版本号：每次新搜索递增，结果返回时只有版本号匹配才写入 state。 */
+  const requestVersion = useRef(0);
+
   const existingIds = useMemo(() => new Set(props.library.papers.map((paper) => paper.id)), [props.library.papers]);
 
-  /**
-   * 触发一次新的搜索。
-   * 每次搜索前会清空旧错误，并记录用户已经执行过搜索动作，
-   * 这样首屏占位与“搜索无结果”的文案就能区分开。
-   */
-  async function handleSearch(): Promise<void> {
+  const handleSearch = useCallback(async function handleSearch(): Promise<void> {
     if (!query.trim()) {
       return;
     }
+
+    requestVersion.current += 1;
+    const currentVersion = requestVersion.current;
 
     setIsSearching(true);
     setSearchError('');
@@ -65,18 +46,26 @@ export function SearchPage(props: SearchPageProps): JSX.Element {
         source,
         limit: 8,
       });
+
+      if (currentVersion !== requestVersion.current) {
+        return;
+      }
+
       setResults(nextResults);
     } catch (error) {
+      if (currentVersion !== requestVersion.current) {
+        return;
+      }
+
       setSearchError(error instanceof Error ? error.message : '搜索失败');
       setResults([]);
     } finally {
-      setIsSearching(false);
+      if (currentVersion === requestVersion.current) {
+        setIsSearching(false);
+      }
     }
-  }
+  }, [query, source]);
 
-  /**
-   * 导入论文并在按钮上显示局部 loading 状态。
-   */
   async function handleImport(candidate: PaperSearchResult): Promise<void> {
     setImportingId(candidate.id);
     await props.onImportPaper(candidate);
@@ -130,7 +119,7 @@ export function SearchPage(props: SearchPageProps): JSX.Element {
                   </div>
                   <p className="paper-abstract">{truncateText(result.abstract || '暂无摘要', 240)}</p>
                   <div className="search-result-meta-line">
-                    <span>{`发布时间：${formatDate(result.publishedAt)}`}</span>
+                    <span>{result.publishedAt ? `发布时间：${formatDate(result.publishedAt)}` : '发布时间：未知'}</span>
                     <strong className={result.isOpenAccess ? 'search-result-status search-result-status-open' : 'search-result-status search-result-status-restricted'}>
                       {`可获取状态：${result.isOpenAccess ? '支持直接下载 PDF' : '当前仅提供详情页入口'}`}
                     </strong>
@@ -172,11 +161,6 @@ interface SearchSectionCardProps {
   headerInline?: boolean;
 }
 
-/**
- * 搜索页面内部使用的轻量卡片容器。
- * 保留和全局 SectionCard 一致的视觉风格，
- * 同时支持标题与说明在同一行展示。
- */
 function SearchSectionCard(props: SearchSectionCardProps): JSX.Element {
   return (
     <section className="section-card">
@@ -191,20 +175,12 @@ function SearchSectionCard(props: SearchSectionCardProps): JSX.Element {
   );
 }
 
-/**
- * 搜索结果中的来源徽章。
- * 这里做了局部封装，后续如果不同来源要显示图标或固定宽度，
- * 可以只改这一个组件。
- */
 function SearchStatusBadge(props: { value: string; label?: string }): JSX.Element {
   const className = `status-badge status-${props.value.replace(/\s+/g, '-').toLowerCase()}`;
 
   return <span className={className}>{props.label ?? props.value}</span>;
 }
 
-/**
- * 统一格式化搜索结果中的日期。
- */
 function formatDate(value: string): string {
   const date = new Date(value);
 
@@ -219,9 +195,6 @@ function formatDate(value: string): string {
   });
 }
 
-/**
- * 控制摘要预览长度，避免结果卡片被长摘要撑高。
- */
 function truncateText(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
     return value;

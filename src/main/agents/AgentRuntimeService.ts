@@ -40,6 +40,7 @@ interface ReaderQaAgentInput {
   currentPage: number;
   textContext?: ReaderTextContext;
   internetContext?: ReaderInternetContext;
+  alphaxivOverview?: string;
   onDelta?: (delta: string) => void;
 }
 
@@ -211,6 +212,9 @@ export class AgentRuntimeService {
               : context.data.internetContext?.shouldSearch
                 ? `联网补充暂不可用：${context.data.internetContext.failureReason ?? '未找到可用资料。'}`
                 : '本问题未触发联网补充。';
+            const alphaxivContextSummary = context.data.alphaxivOverview
+              ? '已载入 alphaXiv 社区 AI 概述。'
+              : '';
 
             return {
               data: {
@@ -218,7 +222,7 @@ export class AgentRuntimeService {
                 annotations,
                 noteSnippet,
               },
-              message: `已载入论文摘要、当前第 ${context.data.currentPage} 页与 ${annotations.length} 条最近批注。${textContextSummary}${internetContextSummary}`,
+              message: `已载入论文摘要、当前第 ${context.data.currentPage} 页与 ${annotations.length} 条最近批注。${textContextSummary}${internetContextSummary}${alphaxivContextSummary}`,
             };
           },
         },
@@ -397,6 +401,7 @@ export class AgentRuntimeService {
           '',
           `联网补充资料：${this.formatInternetContext(input.internetContext)}`,
           '',
+          input.alphaxivOverview ? `${input.alphaxivOverview}\n` : '',
           `最近批注：${input.annotations.length ? input.annotations.join('\n') : '暂无批注。'}`,
           '',
           `阅读笔记：${input.noteSnippet || '暂无阅读笔记。'}`,

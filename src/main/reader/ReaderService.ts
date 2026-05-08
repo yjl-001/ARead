@@ -21,6 +21,7 @@ import { AgentToolRegistry } from '../agents/toolRegistry';
 import { createInternetTools } from '../agents/tools/internetTools';
 import { createReaderTools } from '../agents/tools/readerTools';
 import { PaperService } from '../papers/PaperService';
+import { AlphaXivContextService } from './AlphaXivContextService';
 import { ReaderInternetContextService } from './ReaderInternetContextService';
 import { PaperTextIndexService } from './PaperTextIndexService';
 
@@ -46,6 +47,8 @@ export class ReaderService {
 
   private readonly readerInternetContextService: ReaderInternetContextService;
 
+  private readonly alphaXivContextService: AlphaXivContextService;
+
   public constructor(
     directories: WorkspaceDirectories,
     private readonly paperService: PaperService,
@@ -53,6 +56,7 @@ export class ReaderService {
   ) {
     this.paperTextIndexService = new PaperTextIndexService(directories);
     this.readerInternetContextService = new ReaderInternetContextService(directories);
+    this.alphaXivContextService = new AlphaXivContextService();
     this.files = {
       readingIndexFile: path.join(directories.metadata, 'reading.json'),
       sessionDirectory: path.join(directories.notes, 'reader-sessions'),
@@ -400,6 +404,9 @@ export class ReaderService {
     task: import('@shared/types').AgentTaskRecord;
     timeline: import('@shared/types').AgentTimelineEntry[];
   }> {
+    const alphaxivOverview =
+      paper.source === 'arxiv' ? await this.alphaXivContextService.fetchOverview(paper.sourceId) : null;
+
     if (this.agentRuntimeService.isModelConfigured()) {
       try {
         const toolRegistry = new AgentToolRegistry();
@@ -423,6 +430,7 @@ export class ReaderService {
             session,
             question,
             currentPage,
+            alphaxivOverview: alphaxivOverview ?? undefined,
           },
           spec: readerQaLoopSpec,
           tools: toolRegistry.getAllowedTools(readerQaLoopSpec.allowedTools),
@@ -449,6 +457,7 @@ export class ReaderService {
       currentPage,
       textContext,
       internetContext,
+      alphaxivOverview: alphaxivOverview ?? undefined,
       onDelta,
     });
   }
