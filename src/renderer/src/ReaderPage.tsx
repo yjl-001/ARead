@@ -2411,7 +2411,7 @@ function ReaderSidebar(props: ReaderSidebarProps): JSX.Element {
               </div>
               <div className="reader-note-composer">
                 <label className="field reader-note-composer-field">
-                  <span>输入新笔记</span>
+                  <></>
                   <div className={isNoteComposerFlashing ? 'reader-note-composer-input reader-note-composer-input-flash' : 'reader-note-composer-input'}>
                     <textarea
                       ref={noteTextareaRef}
@@ -2419,7 +2419,7 @@ function ReaderSidebar(props: ReaderSidebarProps): JSX.Element {
                       value={props.noteDraft}
                       onChange={(event) => props.onNoteDraftChange(event.target.value)}
                       onKeyDown={(event) => {
-                        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !props.isSavingNote && props.noteDraft.trim()) {
+                        if (event.key === 'Enter' && !event.shiftKey && !props.isSavingNote && props.noteDraft.trim()) {
                           event.preventDefault();
                           void props.onSaveNote();
                         }
@@ -2427,7 +2427,7 @@ function ReaderSidebar(props: ReaderSidebarProps): JSX.Element {
                       rows={5}
                       placeholder="记录这篇论文的核心贡献、实验疑问和自己的后续行动。"
                     />
-                    <span className="reader-note-shortcut-hint">⌘/Ctrl + Enter</span>
+                    <span className="reader-note-shortcut-hint">Enter 发送 · Shift+Enter 换行</span>
                     <button
                       type="button"
                       className="reader-note-send-button"
@@ -2834,7 +2834,7 @@ function ReaderAssistantPanel(props: ReaderAssistantPanelProps): JSX.Element {
           </div>
         ) : null}
         <label className="field reader-note-composer-field">
-          <span>继续提问</span>
+          <></>
           <div
             className={
               isAssistantComposerFlashing

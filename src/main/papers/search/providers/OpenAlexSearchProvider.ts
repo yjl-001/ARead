@@ -2,11 +2,6 @@ import type { PaperSearchResult } from '@shared/types';
 
 import type { SearchProvider, SearchProviderContext, SearchProviderSearchInput } from '../types';
 
-/**
- * OpenAlex works 接口的最小字段模型。
- * 这里只保留当前搜索模块真正需要的字段，
- * 保证 Provider 对外部 API 结构变化有最小耦合面。
- */
 interface OpenAlexWork {
   id: string;
   display_name: string;
@@ -28,25 +23,11 @@ interface OpenAlexWork {
   } | null;
 }
 
-/**
- * OpenAlex 搜索 Provider。
- *
- * 特点：
- * - 通过 works 接口直接拿结构化 JSON
- * - 可从 best_oa_location / primary_location 中提取 PDF 与落地页
- * - abstract 需要从 inverted index 还原成普通文本
- *
- * 相比 arXiv 和 CVF，它的结构最规整，
- * 也是后续扩展“更多元数据字段”的最好切入点。
- */
 export class OpenAlexSearchProvider implements SearchProvider {
   public readonly source = 'openalex' as const;
 
   public readonly label = 'OpenAlex';
 
-  /**
-   * 把 OpenAlex works 结果转换为统一搜索结果。
-   */
   public async search(input: SearchProviderSearchInput, context: SearchProviderContext): Promise<PaperSearchResult[]> {
     const url = new URL('https://api.openalex.org/works');
     url.searchParams.set('search', input.query);
@@ -67,6 +48,9 @@ export class OpenAlexSearchProvider implements SearchProvider {
         const pdfUrl = work.best_oa_location?.pdf_url ?? work.primary_location?.pdf_url ?? null;
         const entryUrl = work.doi ?? work.best_oa_location?.landing_page_url ?? work.primary_location?.landing_page_url ?? work.id;
         const sourceId = work.id.split('/').pop() ?? work.id;
+        const publishedAt = work.publication_date && !Number.isNaN(new Date(work.publication_date).getTime())
+          ? work.publication_date
+          : '';
 
         return {
           id: `openalex:${sourceId}`,
@@ -78,7 +62,7 @@ export class OpenAlexSearchProvider implements SearchProvider {
             .map((authorship) => authorship.author?.display_name?.trim() ?? '')
             .filter(Boolean),
           abstract: restoreOpenAlexAbstract(work.abstract_inverted_index),
-          publishedAt: work.publication_date ?? new Date().toISOString(),
+          publishedAt,
           entryUrl,
           pdfUrl,
           isOpenAccess: Boolean(pdfUrl),
@@ -88,10 +72,6 @@ export class OpenAlexSearchProvider implements SearchProvider {
   }
 }
 
-/**
- * OpenAlex 用倒排索引存储摘要。
- * 这里按位置回填 token，重新拼出正常摘要文本。
- */
 function restoreOpenAlexAbstract(index?: Record<string, number[]>): string {
   if (!index) {
     return '';

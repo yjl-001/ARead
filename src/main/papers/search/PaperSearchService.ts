@@ -5,33 +5,14 @@ import { CvfOpenAccessSearchProvider } from './providers/CvfOpenAccessSearchProv
 import { OpenAlexSearchProvider } from './providers/OpenAlexSearchProvider';
 import type { SearchProvider, SearchProviderContext, SearchProviderCredentials } from './types';
 
-/**
- * PaperSearchService 的可选构造参数。
- * - fetchImpl: 便于测试时注入 mock fetch
- * - searchProviders: 允许替换默认 Provider 集合
- * - providerCredentials: 为不同来源注入 Cookie / Token / Header
- */
+const SEARCH_TIMEOUT_MS = 15_000;
+
 interface PaperSearchServiceOptions {
   fetchImpl?: typeof fetch;
   searchProviders?: SearchProvider[];
   providerCredentials?: Partial<Record<PaperSourceKey, SearchProviderCredentials>>;
 }
 
-/**
- * 搜索模块的统一服务入口。
- *
- * 设计目标：
- * 1. 把“聚合调度”和“单站解析”彻底拆开；
- * 2. 让 Provider 可插拔，便于持续增加来源；
- * 3. 为后续 Cookie / Token / 自定义 Header / 重试策略预留统一扩展点。
- *
- * 当前它负责：
- * - 规范化 query 与 limit
- * - 根据来源路由到单个 Provider
- * - 在 all 模式下聚合多个 Provider
- * - 合并 credentials 并生成每个 Provider 的请求上下文
- * - 对搜索结果统一排序
- */
 export class PaperSearchService {
   private readonly fetchImpl: typeof fetch;
 
@@ -39,11 +20,6 @@ export class PaperSearchService {
 
   private readonly providers: Map<PaperSourceKey, SearchProvider>;
 
-  /**
-   * 默认注册 arXiv、OpenAlex 和 CVF Open Access。
-   * 如果未来需要把某些来源迁移到配置文件或动态装配，
-   * 只需在这里替换注册来源的方式，而无需改动上层业务代码。
-   */
   public constructor(options: PaperSearchServiceOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.providerCredentials = options.providerCredentials ?? {};
@@ -57,16 +33,12 @@ export class PaperSearchService {
   }
 
   /**
-   * 对外暴露的统一搜索入口。
+   * 统一搜索入口。
    *
-   * 处理逻辑：
    * - 空 query 直接返回空数组
    * - 单源模式：只执行对应 Provider
-   * - all 模式：并行执行所有 Provider，并尽可能保留成功结果
-   *
-   * 注意：
-   * all 模式下只要至少一个 Provider 成功，就不会整体失败；
-   * 只有全部来源都失败时，才会把错误合并后抛出。
+   * - all 模式：并行执行所有 Provider，去重后按时间排序
+   * - 每个 Provider 有 15s 超时保护
    */
   public async search(input: PaperSearchInput): Promise<PaperSearchResult[]> {
     const query = input.query.trim();
@@ -76,34 +48,52 @@ export class PaperSearchService {
       return [];
     }
 
-    if (input.source !== 'all') {
-      return this.runProvider(input.source, query, limit);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
+
+    try {
+      if (input.source !== 'all') {
+        const results = await this.runProvider(input.source, query, limit, controller.signal);
+        return results;
+      }
+
+      const activeProviders = Array.from(this.providers.values());
+      const settledResults = await Promise.allSettled(
+        activeProviders.map((provider) =>
+          provider.search({ query, limit }, this.createContext(provider.source, controller.signal)),
+        ),
+      );
+
+      const fulfilledResults = settledResults
+        .filter((result): result is PromiseFulfilledResult<PaperSearchResult[]> => result.status === 'fulfilled')
+        .flatMap((result) => result.value);
+
+      if (!fulfilledResults.length) {
+        const reasons = settledResults
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => {
+            if (result.reason instanceof Error) {
+              const msg = result.reason.name === 'AbortError' ? '搜索超时' : result.reason.message;
+              return msg;
+            }
+            return '搜索失败';
+          });
+        throw new Error(reasons.join('；'));
+      }
+
+      const deduped = this.deduplicateResults(fulfilledResults);
+      return this.sortResults(deduped).slice(0, limit * activeProviders.length);
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const activeProviders = Array.from(this.providers.values());
-    const settledResults = await Promise.allSettled(
-      activeProviders.map((provider) => provider.search({ query, limit }, this.createContext(provider.source))),
-    );
-    const fulfilledResults = settledResults
-      .filter((result): result is PromiseFulfilledResult<PaperSearchResult[]> => result.status === 'fulfilled')
-      .flatMap((result) => result.value);
-
-    if (!fulfilledResults.length) {
-      const reasons = settledResults
-        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-        .map((result) => (result.reason instanceof Error ? result.reason.message : '搜索失败'));
-      throw new Error(reasons.join('；'));
-    }
-
-    return this.sortResults(fulfilledResults).slice(0, limit * activeProviders.length);
   }
 
-  /**
-   * 执行指定来源的搜索。
-   * 这里把 Provider 查找与错误提示收口，
-   * 可以避免上层到处判断“某个 source 是否已注册”。
-   */
-  private async runProvider(source: PaperSourceKey, query: string, limit: number): Promise<PaperSearchResult[]> {
+  private async runProvider(
+    source: PaperSourceKey,
+    query: string,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<PaperSearchResult[]> {
     const provider = this.providers.get(source);
 
     if (!provider) {
@@ -111,7 +101,7 @@ export class PaperSearchService {
     }
 
     try {
-      return await provider.search({ query, limit }, this.createContext(source));
+      return await provider.search({ query, limit }, this.createContext(source, signal));
     } catch (error) {
       if (this.isRecoverableProviderError(error)) {
         return [];
@@ -121,26 +111,13 @@ export class PaperSearchService {
     }
   }
 
-  /**
-   * 为指定来源创建运行时上下文。
-   *
-   * createRequestInit 是关键扩展点：
-   * Provider 只要传入自己需要的 RequestInit，
-   * 这里就会把平台级 credentials 合并进去。
-   *
-   * 后续如果要加入：
-   * - Referer
-   * - CSRF Token
-   * - 动态签名
-   * - 代理配置
-   * 也可以继续在这里集中演进。
-   */
-  private createContext(source: PaperSourceKey): SearchProviderContext {
+  private createContext(source: PaperSourceKey, signal?: AbortSignal): SearchProviderContext {
     const credentials = this.providerCredentials[source];
 
     return {
       fetch: this.fetchImpl,
       credentials,
+      signal,
       createRequestInit: (init: RequestInit = {}) => {
         const headers = new Headers(init.headers ?? {});
 
@@ -159,27 +136,93 @@ export class PaperSearchService {
         return {
           ...init,
           headers,
+          signal: init.signal ?? signal,
         };
       },
     };
   }
 
   /**
-   * 当前统一按发布时间倒序排序。
-   * 如果未来需要加入站点权重、相关性排序或混合排序，
-   * 这里就是唯一的收口位置。
+   * 按发布时间倒序排序。
+   * 缺少日期的结果排在最后。
    */
   private sortResults(results: PaperSearchResult[]): PaperSearchResult[] {
-    return [...results].sort(
-      (left, right) => new Date(right.publishedAt).getTime() - new Date(left.publishedAt).getTime(),
-    );
+    return [...results].sort((left, right) => {
+      const leftTime = new Date(left.publishedAt || '').getTime();
+      const rightTime = new Date(right.publishedAt || '').getTime();
+
+      if (Number.isNaN(leftTime) && Number.isNaN(rightTime)) return 0;
+      if (Number.isNaN(leftTime)) return 1;
+      if (Number.isNaN(rightTime)) return -1;
+
+      return rightTime - leftTime;
+    });
   }
 
+  /**
+   * 对跨来源的重复结果按标题去重。
+   * 比较时忽略大小写和常见标点，保留摘要更长的版本。
+   */
+  private deduplicateResults(results: PaperSearchResult[]): PaperSearchResult[] {
+    const seen = new Map<string, PaperSearchResult>();
+
+    for (const result of results) {
+      const normalized = normalizeTitleForDedup(result.title);
+
+      if (!normalized) {
+        seen.set(result.id, result);
+        continue;
+      }
+
+      const existing = seen.get(normalized);
+      if (!existing || (result.abstract?.length ?? 0) > (existing.abstract?.length ?? 0)) {
+        seen.set(normalized, result);
+      }
+    }
+
+    return Array.from(seen.values());
+  }
+
+  /**
+   * 按照错误类型和状态码判断是否可以静默恢复。
+   *
+   * 可恢复：网络错误（fetch 失败、超时、DNS 不可达）和临时性 HTTP 状态码。
+   * 不可恢复：编程错误、类型错误、认证失败（401/403）等。
+   */
   private isRecoverableProviderError(error: unknown): boolean {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return true;
+    }
+
+    if (error instanceof TypeError) {
+      return true;
+    }
+
     if (!(error instanceof Error)) {
       return false;
     }
 
-    return /\b(429|500|502|503|504)\b/.test(error.message);
+    if (/\b(429|500|502|503|504)\b/.test(error.message)) {
+      return true;
+    }
+
+    if (error.message.includes('fetch') || error.message.includes('network')) {
+      return true;
+    }
+
+    return false;
   }
+}
+
+/**
+ * 标准化标题用于去重比较：
+ * 转小写、去除 HTML 标签和常见标点、合并空白。
+ */
+function normalizeTitleForDedup(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/<[^>]+>/g, '')
+    .replace(/[^a-z0-9一-鿿]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

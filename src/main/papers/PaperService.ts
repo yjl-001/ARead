@@ -71,7 +71,15 @@ export class PaperService {
     const localPdfPath = candidate.pdfUrl ? path.join(this.files.pdfDirectory, `${safeId}.pdf`) : existingRecord?.localPdfPath ?? null;
 
     if (candidate.pdfUrl && localPdfPath) {
-      const response = await this.fetchImpl(candidate.pdfUrl);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
+      let response: Response;
+      try {
+        response = await this.fetchImpl(candidate.pdfUrl, { signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         throw new Error(`下载 PDF 失败：${response.status}`);

@@ -9,6 +9,7 @@ export interface ReaderQaGoal {
   session: ReaderSession;
   question: string;
   currentPage: number;
+  alphaxivOverview?: string;
 }
 
 export interface ReaderQaLoopResult {
@@ -106,6 +107,17 @@ export function createReaderQaLoopSpec(): LoopAgentSpec<ReaderQaGoal, ReaderQaLo
       };
     },
     buildPlannerMessages(state, tools) {
+      const contextParts = [
+        `论文标题：${state.goal.paper.title}`,
+        `作者：${state.goal.paper.authors.join('、') || '未知'}`,
+        `来源：${state.goal.paper.sourceLabel}`,
+        `当前页：第 ${state.goal.currentPage} 页`,
+      ];
+
+      if (state.goal.alphaxivOverview) {
+        contextParts.push('', state.goal.alphaxivOverview);
+      }
+
       return [
         {
           role: 'system',
@@ -114,10 +126,7 @@ export function createReaderQaLoopSpec(): LoopAgentSpec<ReaderQaGoal, ReaderQaLo
         {
           role: 'user',
           content: [
-            `论文标题：${state.goal.paper.title}`,
-            `作者：${state.goal.paper.authors.join('、') || '未知'}`,
-            `来源：${state.goal.paper.sourceLabel}`,
-            `当前页：第 ${state.goal.currentPage} 页`,
+            ...contextParts,
             '',
             `用户问题：${state.goal.question.trim()}`,
             '',

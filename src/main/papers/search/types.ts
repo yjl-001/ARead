@@ -22,6 +22,7 @@ export interface SearchProviderContext {
   fetch: typeof fetch;
   credentials?: SearchProviderCredentials;
   createRequestInit: (init?: RequestInit) => RequestInit;
+  signal?: AbortSignal;
 }
 
 /**
