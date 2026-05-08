@@ -89,6 +89,9 @@ export function App(): JSX.Element {
   const [bootstrapError, setBootstrapError] = useState('');
   const [notice, setNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
   const [workspaceFontSizePreview, setWorkspaceFontSizePreview] = useState<number | null>(null);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches,
+  );
 
   useEffect(() => {
     async function loadBootstrap(): Promise<void> {
@@ -104,6 +107,22 @@ export function App(): JSX.Element {
 
     void loadBootstrap();
   }, []);
+
+  useEffect(() => {
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
+
+  useEffect(() => {
+    if (!bootstrap) return;
+    const { defaultTheme } = bootstrap.workspace.config;
+    const effective = defaultTheme === 'system'
+      ? (systemPrefersDark ? 'dark' : 'light')
+      : defaultTheme;
+    document.documentElement.setAttribute('data-theme', effective);
+  }, [bootstrap, systemPrefersDark]);
 
   useEffect(() => {
     if (!notice || notice.tone !== 'success') {

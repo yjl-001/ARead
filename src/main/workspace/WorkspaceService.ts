@@ -185,7 +185,7 @@ export class WorkspaceService {
       version: '0.1.0',
       createdAt: now,
       updatedAt: now,
-      defaultTheme: 'system',
+      defaultTheme: 'light',
       fontSize: DEFAULT_WORKSPACE_FONT_SIZE,
       defaultModel: 'langchain-runtime-placeholder',
       workspaceDirectories: this.defaultDirectories,
